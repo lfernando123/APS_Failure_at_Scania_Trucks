@@ -102,6 +102,7 @@ print("ROC AUC  :", roc_auc_score(y_test, y_prob))
 
 print("\nClassification Report")
 print(classification_report(y_test, y_pred))
+print("Best CV Score:", grid.best_score_)
 
 # -----------------------------
 # Confusion Matrix

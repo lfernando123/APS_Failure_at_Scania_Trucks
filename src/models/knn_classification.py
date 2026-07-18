@@ -96,13 +96,13 @@ y_prob = best_knn.predict_proba(X_test)[:,1]
 # ======================================================
 # Evaluation
 # ======================================================
-
 print("\nAccuracy:", accuracy_score(y_test, y_pred))
 
 print("\nClassification Report")
 print(classification_report(y_test, y_pred))
 
 print("\nROC-AUC:", roc_auc_score(y_test, y_prob))
+print("Best CV Score:", grid_search.best_score_)
 
 # ======================================================
 # Confusion Matrix
