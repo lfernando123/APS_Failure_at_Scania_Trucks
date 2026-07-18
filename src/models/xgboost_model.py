@@ -75,13 +75,34 @@ model = XGBClassifier(
     scale_pos_weight=scale_pos_weight
 )
 
-model.fit(X_train, y_train)
+param_grid = {
+    "max_depth": [4, 6, 8],
+    "learning_rate": [0.01, 0.05, 0.1],
+    "n_estimators": [200, 300, 500],
+    "subsample": [0.8, 1.0],
+    "colsample_bytree": [0.8, 1.0]
+}
+
+grid = GridSearchCV(
+    estimator=XGBClassifier(
+        objective="binary:logistic",
+        scale_pos_weight=scale_pos_weight,
+        random_state=42,
+        eval_metric="logloss"
+    ),
+    param_grid=param_grid,
+    scoring="f1",
+    cv=5,
+    n_jobs=-1
+)
+
+grid.fit(X_train, y_train)
 
 # ---------------------------------------------------
 # Prediction
 # ---------------------------------------------------
-y_pred = model.predict(X_test)
-y_prob = model.predict_proba(X_test)[:, 1]
+y_pred = grid.predict(X_test)
+y_prob = grid.predict_proba(X_test)[:, 1]
 
 # ---------------------------------------------------
 # Evaluation
@@ -105,7 +126,7 @@ print(cm)
 # ---------------------------------------------------
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 scores = cross_val_score(
-    model,
+    grid,
     X,
     y,
     cv=cv,
@@ -189,11 +210,11 @@ plt.close()
 # ---------------------------------------------------
 # Save Model
 # ---------------------------------------------------
-joblib.dump(best_model, "xgboost_model.pkl")
-joblib.dump(imputer, "imputer.pkl")
+# joblib.dump(best_model, "xgboost_model.pkl")
+# joblib.dump(imputer, "imputer.pkl")
 
-print("\nModel saved as xgboost_model.pkl")
-print("Imputer saved as imputer.pkl")
+# print("\nModel saved as xgboost_model.pkl")
+# print("Imputer saved as imputer.pkl")
 
 # ---------------------------------------------------
 # Example Prediction
