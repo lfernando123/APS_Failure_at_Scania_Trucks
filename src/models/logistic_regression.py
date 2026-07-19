@@ -2,6 +2,8 @@
 # Logistic Regression Model
 # ============================
 
+from pyexpat import model
+
 import pandas as pd
 import numpy as np
 
@@ -24,6 +26,7 @@ from sklearn.metrics import (
 )
 
 import matplotlib.pyplot as plt
+import shap
 
 df = pd.read_csv("../../data/processed/train_selected.csv")
 
@@ -90,6 +93,50 @@ best_model = grid.best_estimator_
 y_pred = best_model.predict(X_test)
 y_prob = best_model.predict_proba(X_test)[:,1]
 
+# ============================================================
+# SHAP Explainability
+# ============================================================
+
+print("\nCalculating SHAP values...")
+
+# Transform data using pipeline steps
+X_train_processed = best_model[:-1].transform(X_train)
+X_test_processed = best_model[:-1].transform(X_test)
+
+feature_names = X.columns
+
+explainer = shap.LinearExplainer(
+    best_model.named_steps["classifier"],
+    X_train_processed,
+)
+
+shap_values = explainer.shap_values(X_test_processed)
+
+# Summary Plot
+shap.summary_plot(
+    shap_values,
+    X_test_processed,
+    feature_names=feature_names,
+)
+
+# Bar Plot
+shap.summary_plot(
+    shap_values,
+    X_test_processed,
+    feature_names=feature_names,
+    plot_type="bar",
+)
+
+# Waterfall Plot for one sample
+sample = 0
+
+explanation = shap.Explanation(
+    values=shap_values[sample],
+    base_values=explainer.expected_value,
+    data=X_test_processed[sample],
+    feature_names=feature_names,
+)
+
 # -----------------------------
 # Evaluation
 # -----------------------------
@@ -113,6 +160,8 @@ disp = ConfusionMatrixDisplay(
     confusion_matrix=cm,
     display_labels=["Negative", "Positive"]
 )
+
+shap.plots.waterfall(explanation)
 
 disp.plot(cmap="Blues")
 plt.title("Logistic Regression Confusion Matrix")

@@ -1,152 +1,207 @@
-# ======================================================
-# K-Nearest Neighbors (KNN) Classification
-# ======================================================
+# ============================================================
+# KNN Classifier with LIME & Permutation Importance
+# APS Failure Detection Dataset
+# ============================================================
 
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
-from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.model_selection import train_test_split
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
 from sklearn.neighbors import KNeighborsClassifier
 
 from sklearn.metrics import (
-    accuracy_score,
     classification_report,
     confusion_matrix,
     ConfusionMatrixDisplay,
-    roc_auc_score,
-    roc_curve
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score
 )
 
-import matplotlib.pyplot as plt
+from sklearn.inspection import permutation_importance
 
-# ======================================================
+from lime.lime_tabular import LimeTabularExplainer
+
+# ============================================================
 # Load Dataset
-# ======================================================
+# ============================================================
 
 df = pd.read_csv("../../data/processed/train_selected.csv")
-
-# ======================================================
-# Features and Target
-# ======================================================
 
 X = df.drop("class", axis=1)
 y = df["class"]
 
-# ======================================================
-# Train-Test Split
-# ======================================================
+# ============================================================
+# Train/Test Split
+# ============================================================
 
 X_train, X_test, y_train, y_test = train_test_split(
     X,
     y,
-    test_size=0.2,
-    random_state=42,
-    stratify=y
+    test_size=0.20,
+    stratify=y,
+    random_state=42
 )
 
-# ======================================================
-# Build Pipeline
-# ======================================================
+# ============================================================
+# Missing Value Imputation
+# ============================================================
 
-knn_pipeline = Pipeline([
-    ("imputer", SimpleImputer(strategy="median")),
-    ("scaler", StandardScaler()),
-    ("knn", KNeighborsClassifier())
-])
+imputer = SimpleImputer(strategy="median")
 
-# ======================================================
-# Hyperparameter Tuning
-# ======================================================
-
-param_grid = {
-    "knn__n_neighbors": [3, 5, 7, 9, 11],
-    "knn__weights": ["uniform", "distance"],
-    "knn__metric": ["euclidean", "manhattan"]
-}
-
-grid_search = GridSearchCV(
-    estimator=knn_pipeline,
-    param_grid=param_grid,
-    cv=5,
-    scoring="f1",
-    n_jobs=-1
+X_train_imp = pd.DataFrame(
+    imputer.fit_transform(X_train),
+    columns=X.columns
 )
 
-grid_search.fit(X_train, y_train)
+X_test_imp = pd.DataFrame(
+    imputer.transform(X_test),
+    columns=X.columns
+)
 
-print("Best Parameters:")
-print(grid_search.best_params_)
+# ============================================================
+# Feature Scaling
+# ============================================================
 
-# ======================================================
-# Best Model
-# ======================================================
+scaler = StandardScaler()
 
-best_knn = grid_search.best_estimator_
+X_train_scaled = pd.DataFrame(
+    scaler.fit_transform(X_train_imp),
+    columns=X.columns
+)
 
-# ======================================================
+X_test_scaled = pd.DataFrame(
+    scaler.transform(X_test_imp),
+    columns=X.columns
+)
+
+# ============================================================
+# Train KNN
+# ============================================================
+
+knn_model = KNeighborsClassifier(
+    n_neighbors=5,
+    weights="distance",
+    metric="minkowski",
+    p=2
+)
+
+knn_model.fit(X_train_scaled, y_train)
+
+# ============================================================
 # Predictions
-# ======================================================
+# ============================================================
 
-y_pred = best_knn.predict(X_test)
-y_prob = best_knn.predict_proba(X_test)[:,1]
+y_pred = knn_model.predict(X_test_scaled)
+y_prob = knn_model.predict_proba(X_test_scaled)[:,1]
 
-# ======================================================
+# ============================================================
 # Evaluation
-# ======================================================
-print("\nAccuracy:", accuracy_score(y_test, y_pred))
+# ============================================================
 
 print("\nClassification Report")
 print(classification_report(y_test, y_pred))
 
-print("\nROC-AUC:", roc_auc_score(y_test, y_prob))
-print("Best CV Score:", grid_search.best_score_)
+print("Accuracy :", accuracy_score(y_test,y_pred))
+print("Precision:", precision_score(y_test,y_pred))
+print("Recall   :", recall_score(y_test,y_pred))
+print("F1 Score :", f1_score(y_test,y_pred))
+print("ROC AUC  :", roc_auc_score(y_test,y_prob))
 
-# ======================================================
+# ============================================================
 # Confusion Matrix
-# ======================================================
+# ============================================================
 
-cm = confusion_matrix(y_test, y_pred)
+cm = confusion_matrix(y_test,y_pred)
 
-disp = ConfusionMatrixDisplay(
-    confusion_matrix=cm,
-    display_labels=["Negative", "Positive"]
-)
+disp = ConfusionMatrixDisplay(cm)
 
 disp.plot(cmap="Blues")
-plt.title("Confusion Matrix - KNN")
+
+plt.title("KNN Confusion Matrix")
+
 plt.show()
 
-# ======================================================
-# ROC Curve
-# ======================================================
+# ============================================================
+# LIME Explainability
+# ============================================================
 
-fpr, tpr, thresholds = roc_curve(y_test, y_prob)
+print("\nGenerating LIME Explanation...")
 
-plt.figure(figsize=(6,5))
-plt.plot(fpr, tpr, label=f"AUC = {roc_auc_score(y_test, y_prob):.4f}")
-plt.plot([0,1], [0,1], '--')
-plt.xlabel("False Positive Rate")
-plt.ylabel("True Positive Rate")
-plt.title("ROC Curve - KNN")
-plt.legend()
-plt.show()
-
-# ======================================================
-# Cross Validation
-# ======================================================
-
-cv_scores = cross_val_score(
-    best_knn,
-    X,
-    y,
-    cv=5,
-    scoring="f1"
+explainer = LimeTabularExplainer(
+    training_data=X_train_scaled.values,
+    feature_names=X.columns.tolist(),
+    class_names=["Negative","Positive"],
+    mode="classification"
 )
 
-print("\nCross Validation F1 Scores:")
-print(cv_scores)
+sample = 0
 
-print("Mean F1 Score:", cv_scores.mean())
+exp = explainer.explain_instance(
+    X_test_scaled.iloc[sample].values,
+    knn_model.predict_proba,
+    num_features=10
+)
+
+# Show explanation
+fig = exp.as_pyplot_figure()
+
+plt.tight_layout()
+
+plt.show()
+
+# ============================================================
+# Permutation Importance
+# ============================================================
+
+print("\nCalculating Permutation Importance...")
+
+perm = permutation_importance(
+    knn_model,
+    X_test_scaled,
+    y_test,
+    scoring="f1",
+    n_repeats=10,
+    random_state=42
+)
+
+importance = pd.DataFrame({
+    "Feature":X.columns,
+    "Importance":perm.importances_mean
+})
+
+importance = importance.sort_values(
+    by="Importance",
+    ascending=False
+)
+
+print("\nTop 20 Features")
+print(importance.head(20))
+
+# ============================================================
+# Plot Feature Importance
+# ============================================================
+
+plt.figure(figsize=(8,10))
+
+plt.barh(
+    importance["Feature"].head(20),
+    importance["Importance"].head(20)
+)
+
+plt.gca().invert_yaxis()
+
+plt.xlabel("Permutation Importance")
+
+plt.title("Top 20 Important Features")
+
+plt.tight_layout()
+
+plt.show()
+
+print("\nFinished.")

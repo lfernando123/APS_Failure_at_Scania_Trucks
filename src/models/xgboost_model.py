@@ -1,35 +1,20 @@
 
-"""
-xgboost_model.py
-APS Failure Prediction using XGBoost
-"""
-
 import warnings
 warnings.filterwarnings("ignore")
 
-import joblib
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import shap
 
 from sklearn.impute import SimpleImputer
+from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold, cross_val_score
 from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    roc_auc_score,
-    confusion_matrix,
-    classification_report,
-    ConfusionMatrixDisplay,
+    accuracy_score, precision_score, recall_score,
+    f1_score, roc_auc_score, classification_report,
+    confusion_matrix, ConfusionMatrixDisplay,
     RocCurveDisplay
 )
-from sklearn.model_selection import (
-    train_test_split,
-    StratifiedKFold,
-    cross_val_score,
-    GridSearchCV
-)
+from sklearn.inspection import permutation_importance
 
 from xgboost import XGBClassifier
 
@@ -41,11 +26,15 @@ df = pd.read_csv("../../data/processed/train_selected.csv")
 X = df.drop("class", axis=1)
 y = df["class"]
 
-# Missing value imputation
+# ---------------------------------------------------
+# Missing Value Imputation
+# ---------------------------------------------------
 imputer = SimpleImputer(strategy="median")
 X = pd.DataFrame(imputer.fit_transform(X), columns=X.columns)
 
-# Train/Test split
+# ---------------------------------------------------
+# Train/Test Split
+# ---------------------------------------------------
 X_train, X_test, y_train, y_test = train_test_split(
     X, y,
     test_size=0.20,
@@ -53,56 +42,61 @@ X_train, X_test, y_train, y_test = train_test_split(
     random_state=42
 )
 
-# Handle class imbalance
+# ---------------------------------------------------
+# Handle Class Imbalance
+# ---------------------------------------------------
 negative = (y_train == 0).sum()
 positive = (y_train == 1).sum()
 scale_pos_weight = negative / positive
 
-print("Scale Pos Weight:", scale_pos_weight)
+print(f"Scale Pos Weight: {scale_pos_weight:.2f}")
 
 # ---------------------------------------------------
-# Base Model
+# Hyperparameter Tuning
 # ---------------------------------------------------
-model = XGBClassifier(
-    objective="binary:logistic",
-    eval_metric="logloss",
-    random_state=42,
-    n_estimators=300,
-    learning_rate=0.05,
-    max_depth=6,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    scale_pos_weight=scale_pos_weight
-)
-
 param_grid = {
-    "max_depth": [4, 6, 8],
-    "learning_rate": [0.01, 0.05, 0.1],
-    "n_estimators": [200, 300, 500],
-    "subsample": [0.8, 1.0],
-    "colsample_bytree": [0.8, 1.0]
+    "max_depth": [4, 6],
+    "learning_rate": [0.05, 0.1],
+    "n_estimators": [200, 300],
+    "subsample": [0.8],
+    "colsample_bytree": [0.8]
 }
 
 grid = GridSearchCV(
-    estimator=XGBClassifier(
+    XGBClassifier(
         objective="binary:logistic",
-        scale_pos_weight=scale_pos_weight,
+        eval_metric="logloss",
         random_state=42,
-        eval_metric="logloss"
+        scale_pos_weight=scale_pos_weight
     ),
     param_grid=param_grid,
     scoring="f1",
-    cv=5,
+    cv=3,
     n_jobs=-1
 )
 
 grid.fit(X_train, y_train)
 
+best_model = grid.best_estimator_
+
+print("\nBest Parameters")
+print(grid.best_params_)
+print("Best CV F1:", grid.best_score_)
+
+# ---------------------------------------------------
+# Cross Validation
+# ---------------------------------------------------
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+scores = cross_val_score(best_model, X, y, cv=cv, scoring="f1", n_jobs=-1)
+
+print("\nCross Validation F1 Scores:", scores)
+print("Mean F1:", scores.mean())
+
 # ---------------------------------------------------
 # Prediction
 # ---------------------------------------------------
-y_pred = grid.predict(X_test)
-y_prob = grid.predict_proba(X_test)[:, 1]
+y_pred = best_model.predict(X_test)
+y_prob = best_model.predict_proba(X_test)[:,1]
 
 # ---------------------------------------------------
 # Evaluation
@@ -117,54 +111,19 @@ print("ROC AUC  :", roc_auc_score(y_test, y_prob))
 print("\nClassification Report")
 print(classification_report(y_test, y_pred))
 
-cm = confusion_matrix(y_test, y_pred)
-print("\nConfusion Matrix")
-print(cm)
+# ---------------------------------------------------
+# Confusion Matrix
+# ---------------------------------------------------
+ConfusionMatrixDisplay.from_estimator(best_model, X_test, y_test)
+plt.title("Confusion Matrix")
+plt.show()
 
 # ---------------------------------------------------
-# Cross Validation
+# ROC Curve
 # ---------------------------------------------------
-cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-scores = cross_val_score(
-    grid,
-    X,
-    y,
-    cv=cv,
-    scoring="f1"
-)
-
-print("\nCross Validation F1 Scores:", scores)
-print("Mean F1:", scores.mean())
-
-# ---------------------------------------------------
-# Grid Search
-# ---------------------------------------------------
-param_grid = {
-    "max_depth": [4, 6],
-    "learning_rate": [0.05, 0.1],
-    "n_estimators": [200, 300]
-}
-
-grid = GridSearchCV(
-    XGBClassifier(
-        objective="binary:logistic",
-        eval_metric="logloss",
-        random_state=42,
-        scale_pos_weight=scale_pos_weight
-    ),
-    param_grid=param_grid,
-    cv=3,
-    scoring="f1",
-    n_jobs=-1
-)
-
-grid.fit(X_train, y_train)
-
-print("\nBest Parameters")
-print(grid.best_params_)
-print("Best CV F1:", grid.best_score_)
-
-best_model = grid.best_estimator_
+RocCurveDisplay.from_estimator(best_model, X_test, y_test)
+plt.title("ROC Curve")
+plt.show()
 
 # ---------------------------------------------------
 # Feature Importance
@@ -172,12 +131,7 @@ best_model = grid.best_estimator_
 importance = pd.DataFrame({
     "Feature": X.columns,
     "Importance": best_model.feature_importances_
-})
-
-importance = importance.sort_values(
-    "Importance",
-    ascending=False
-)
+}).sort_values("Importance", ascending=False)
 
 print("\nTop 20 Features")
 print(importance.head(20))
@@ -188,33 +142,74 @@ plt.barh(
     importance["Importance"].head(20)
 )
 plt.gca().invert_yaxis()
-plt.title("Top 20 Feature Importances")
-plt.tight_layout()
-plt.savefig("feature_importance.png")
-plt.close()
+plt.title("XGBoost Feature Importance")
+plt.show()
 
 # ---------------------------------------------------
-# Confusion Matrix Plot
+# SHAP Summary & Bar Plot
 # ---------------------------------------------------
-ConfusionMatrixDisplay.from_estimator(best_model, X_test, y_test)
-plt.savefig("confusion_matrix.png")
-plt.close()
+print("\nCalculating SHAP values...")
+
+explainer = shap.TreeExplainer(best_model)
+shap_values = explainer.shap_values(X_test)
+
+shap.summary_plot(
+    shap_values,
+    X_test,
+    feature_names=X.columns,
+    show=False
+)
+plt.title("SHAP Summary")
+plt.show()
+
+shap.summary_plot(
+    shap_values,
+    X_test,
+    feature_names=X.columns,
+    plot_type="bar",
+    show=False
+)
+plt.title("SHAP Bar Plot")
+plt.show()
 
 # ---------------------------------------------------
-# ROC Curve
+# SHAP Waterfall
 # ---------------------------------------------------
-RocCurveDisplay.from_estimator(best_model, X_test, y_test)
-plt.savefig("roc_curve.png")
-plt.close()
+explainer2 = shap.Explainer(best_model)
+exp = explainer2(X_test.iloc[:1])
+
+shap.plots.waterfall(exp[0], show=False)
+plt.title("SHAP Waterfall Plot")
+plt.show()
 
 # ---------------------------------------------------
-# Save Model
+# Permutation Importance
 # ---------------------------------------------------
-# joblib.dump(best_model, "xgboost_model.pkl")
-# joblib.dump(imputer, "imputer.pkl")
+perm = permutation_importance(
+    best_model,
+    X_test,
+    y_test,
+    scoring="f1",
+    n_repeats=10,
+    random_state=42,
+    n_jobs=-1
+)
 
-# print("\nModel saved as xgboost_model.pkl")
-# print("Imputer saved as imputer.pkl")
+perm_df = pd.DataFrame({
+    "Feature": X.columns,
+    "Importance": perm.importances_mean
+}).sort_values("Importance", ascending=False)
+
+print("\nTop 20 Permutation Importance")
+print(perm_df.head(20))
+
+plt.figure(figsize=(10,7))
+plt.barh(
+    perm_df["Feature"].head(20),
+    perm_df["Importance"].head(20)
+)
+plt.title("Permutation Importance")
+plt.show()
 
 # ---------------------------------------------------
 # Example Prediction
@@ -226,3 +221,5 @@ probability = best_model.predict_proba(sample)[0][1]
 print("\nExample Prediction")
 print("Predicted Class:", prediction)
 print("Failure Probability:", probability)
+
+print("\nFinished successfully.")

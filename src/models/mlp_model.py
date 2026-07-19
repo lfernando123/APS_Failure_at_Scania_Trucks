@@ -1,190 +1,237 @@
+import warnings
+warnings.filterwarnings("ignore")
 
-"""
-APS Failure Prediction using TensorFlow
-Manual Grid Search + 5-Fold Stratified Cross Validation
-"""
-
-import itertools
+import random
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
+import shap
 
-from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import roc_auc_score, classification_report, confusion_matrix, roc_curve
-
-from imblearn.over_sampling import SMOTE
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score,
+    f1_score, roc_auc_score, classification_report,
+    ConfusionMatrixDisplay, RocCurveDisplay
+)
+from sklearn.inspection import permutation_importance
+from sklearn.base import BaseEstimator, ClassifierMixin
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
+from tensorflow.keras.layers import Dense, Dropout, Input
 from tensorflow.keras.callbacks import EarlyStopping
-from tensorflow.keras.optimizers import Adam
 
-# ----------------------------
-# Load data
-# ----------------------------
+# ---------------------------------------------------
+# Reproducibility
+# ---------------------------------------------------
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+
+# ---------------------------------------------------
+# Load Dataset
+# ---------------------------------------------------
 df = pd.read_csv("../../data/processed/train_selected.csv")
 
 X = df.drop("class", axis=1)
 y = df["class"]
 
-# ----------------------------
-# Preprocess
-# ----------------------------
+# ---------------------------------------------------
+# Preprocessing
+# ---------------------------------------------------
 imputer = SimpleImputer(strategy="median")
-X = imputer.fit_transform(X)
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
+X = pd.DataFrame(imputer.fit_transform(X), columns=X.columns)
 
 scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
+X = pd.DataFrame(scaler.fit_transform(X), columns=X.columns)
 
-smote = SMOTE(random_state=42)
-X_train, y_train = smote.fit_resample(X_train, y_train)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    stratify=y,
+    random_state=SEED
+)
 
-# ----------------------------
-# Model factory
-# ----------------------------
-def build_model(input_dim, lr, n1, n2, dr):
+# ---------------------------------------------------
+# Build MLP
+# ---------------------------------------------------
+def build_model(input_dim):
     model = Sequential([
-        tf.keras.Input(shape=(input_dim,)),
-        Dense(n1, activation="relu"),
-        BatchNormalization(),
-        Dropout(dr),
-        Dense(n2, activation="relu"),
-        BatchNormalization(),
-        Dropout(dr),
+        Input(shape=(input_dim,)),
+        Dense(128, activation="relu"),
+        Dropout(0.3),
         Dense(64, activation="relu"),
+        Dropout(0.3),
+        Dense(32, activation="relu"),
         Dense(1, activation="sigmoid")
     ])
+
     model.compile(
-        optimizer=Adam(learning_rate=lr),
+        optimizer="adam",
         loss="binary_crossentropy",
-        metrics=[tf.keras.metrics.AUC(name="auc")]
+        metrics=["accuracy"]
     )
     return model
 
-# ----------------------------
-# Hyperparameter grid
-# ----------------------------
-grid = {
-    "learning_rate":[0.001,0.0005],
-    "neurons1":[128,256],
-    "neurons2":[64,128],
-    "dropout":[0.2,0.3],
-    "batch_size":[64],
-    "epochs":[30]
-}
+mlp = build_model(X_train.shape[1])
 
-keys = list(grid.keys())
-combinations = list(itertools.product(*grid.values()))
-
-cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-
-results = []
-best_auc = -1
-best_params = None
-
-print(f"Testing {len(combinations)} hyperparameter combinations...")
-
-for idx, values in enumerate(combinations, start=1):
-    params = dict(zip(keys, values))
-    print(f"\nCombination {idx}/{len(combinations)}: {params}")
-
-    fold_scores = []
-
-    for fold, (tr, val) in enumerate(cv.split(X_train, y_train), start=1):
-        print(f"  Fold {fold}/5")
-
-        model = build_model(
-            X_train.shape[1],
-            params["learning_rate"],
-            params["neurons1"],
-            params["neurons2"],
-            params["dropout"]
-        )
-
-        es = EarlyStopping(
-            monitor="val_loss",
-            patience=5,
-            restore_best_weights=True
-        )
-
-        model.fit(
-            X_train[tr], y_train.iloc[tr] if hasattr(y_train,"iloc") else y_train[tr],
-            validation_data=(X_train[val], y_train.iloc[val] if hasattr(y_train,"iloc") else y_train[val]),
-            epochs=params["epochs"],
-            batch_size=params["batch_size"],
-            verbose=0,
-            callbacks=[es]
-        )
-
-        probs = model.predict(X_train[val], verbose=0).ravel()
-        auc = roc_auc_score(y_train.iloc[val] if hasattr(y_train,"iloc") else y_train[val], probs)
-        fold_scores.append(auc)
-
-    mean_auc = np.mean(fold_scores)
-    print("Mean ROC-AUC:", round(mean_auc,5))
-
-    results.append({**params,"mean_auc":mean_auc})
-
-    if mean_auc > best_auc:
-        best_auc = mean_auc
-        best_params = params
-
-results_df = pd.DataFrame(results)
-results_df.to_csv("DL_CV_Results.csv", index=False)
-
-print("\nBest Parameters")
-print(best_params)
-print("Best CV ROC-AUC:", best_auc)
-
-# ----------------------------
-# Train final model
-# ----------------------------
-final_model = build_model(
-    X_train.shape[1],
-    best_params["learning_rate"],
-    best_params["neurons1"],
-    best_params["neurons2"],
-    best_params["dropout"]
+early_stop = EarlyStopping(
+    monitor="val_loss",
+    patience=10,
+    restore_best_weights=True
 )
 
-es = EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True)
-
-history = final_model.fit(
-    X_train, y_train,
+history = mlp.fit(
+    X_train,
+    y_train,
     validation_split=0.2,
-    epochs=best_params["epochs"],
-    batch_size=best_params["batch_size"],
-    callbacks=[es],
+    epochs=100,
+    batch_size=64,
+    callbacks=[early_stop],
     verbose=1
 )
 
-y_prob = final_model.predict(X_test).ravel()
-y_pred = (y_prob > 0.5).astype(int)
+# ---------------------------------------------------
+# Evaluation
+# ---------------------------------------------------
+y_prob = mlp.predict(X_test, verbose=0).flatten()
+y_pred = (y_prob >= 0.5).astype(int)
 
+print("\n========== Evaluation ==========")
+print("Accuracy :", accuracy_score(y_test, y_pred))
+print("Precision:", precision_score(y_test, y_pred))
+print("Recall   :", recall_score(y_test, y_pred))
+print("F1 Score :", f1_score(y_test, y_pred))
+print("ROC AUC  :", roc_auc_score(y_test, y_prob))
+
+print("\nClassification Report")
 print(classification_report(y_test, y_pred))
-print("Test ROC-AUC:", roc_auc_score(y_test, y_prob))
 
-cm = confusion_matrix(y_test, y_pred)
-sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
-plt.title("Confusion Matrix")
-plt.show()
-
-fpr,tpr,_=roc_curve(y_test,y_prob)
-plt.figure()
-plt.plot(fpr,tpr,label=f"AUC={roc_auc_score(y_test,y_prob):.4f}")
-plt.plot([0,1],[0,1],"--")
+# ---------------------------------------------------
+# Training Curves
+# ---------------------------------------------------
+plt.figure(figsize=(8,5))
+plt.plot(history.history["loss"], label="Train")
+plt.plot(history.history["val_loss"], label="Validation")
+plt.title("Loss")
 plt.legend()
-plt.title("ROC Curve")
-plt.show()
+plt.tight_layout()
+plt.savefig("mlp_loss.png", dpi=300)
+plt.close()
 
-final_model.save("APS_DNN_Final.keras")
-print("Finished.")
+plt.figure(figsize=(8,5))
+plt.plot(history.history["accuracy"], label="Train")
+plt.plot(history.history["val_accuracy"], label="Validation")
+plt.title("Accuracy")
+plt.legend()
+plt.tight_layout()
+plt.savefig("mlp_accuracy.png", dpi=300)
+plt.close()
+
+# ---------------------------------------------------
+# Confusion Matrix
+# ---------------------------------------------------
+ConfusionMatrixDisplay.from_predictions(y_test, y_pred)
+plt.tight_layout()
+plt.savefig("confusion_matrix.png", dpi=300)
+plt.close()
+
+# ---------------------------------------------------
+# ROC Curve
+# ---------------------------------------------------
+RocCurveDisplay.from_predictions(y_test, y_prob)
+plt.tight_layout()
+plt.savefig("roc_curve.png", dpi=300)
+plt.close()
+
+# ---------------------------------------------------
+# SHAP (Kernel Explainer)
+# ---------------------------------------------------
+print("\nCalculating SHAP values...")
+
+background = X_train.sample(min(100, len(X_train)), random_state=SEED)
+
+explainer = shap.KernelExplainer(
+    mlp.predict,
+    background
+)
+
+sample = X_test.iloc[:100]
+
+shap_values = explainer.shap_values(sample)
+
+shap.summary_plot(
+    shap_values,
+    sample,
+    feature_names=X.columns,
+    show=False
+)
+plt.tight_layout()
+plt.savefig("shap_summary.png", dpi=300)
+plt.close()
+
+shap.summary_plot(
+    shap_values,
+    sample,
+    feature_names=X.columns,
+    plot_type="bar",
+    show=False
+)
+plt.tight_layout()
+plt.savefig("shap_bar.png", dpi=300)
+plt.close()
+
+# ---------------------------------------------------
+# Permutation Importance
+# ---------------------------------------------------
+class KerasWrapper(BaseEstimator, ClassifierMixin):
+    def __init__(self, model):
+        self.model = model
+
+    def fit(self, X, y):
+        return self
+
+    def predict(self, X):
+        return (self.model.predict(X, verbose=0).flatten() >= 0.5).astype(int)
+
+    def predict_proba(self, X):
+        p = self.model.predict(X, verbose=0).flatten()
+        return np.column_stack((1-p, p))
+
+wrapper = KerasWrapper(mlp)
+
+perm = permutation_importance(
+    wrapper,
+    X_test,
+    y_test,
+    scoring="f1",
+    n_repeats=10,
+    random_state=SEED,
+    n_jobs=1
+)
+
+perm_df = pd.DataFrame({
+    "Feature": X.columns,
+    "Importance": perm.importances_mean
+}).sort_values("Importance", ascending=False)
+
+plt.figure(figsize=(10,7))
+plt.barh(
+    perm_df["Feature"].head(20),
+    perm_df["Importance"].head(20)
+)
+plt.gca().invert_yaxis()
+plt.title("Permutation Importance")
+plt.tight_layout()
+plt.savefig("permutation_importance.png", dpi=300)
+plt.close()
+
+# ---------------------------------------------------
+# Save model
+# ---------------------------------------------------
+mlp.save("mlp_model.keras")
+
+print("\nFinished successfully.")
